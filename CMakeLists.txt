@@ -14,12 +14,28 @@ set(OpenCV_DIR ${CMAKE_SOURCE_DIR}/opencv)
 set(OpenCV_INCLUDE_DIRS ${OpenCV_DIR}/include)
 set(OpenCV_LIB_DIR ${OpenCV_DIR}/lib)
 
-add_executable(relief_height_field relief_height_field.cpp)
+# 使用当前目录下的 libtiff（用于写出带 Photoshop 专色标签的 TIFF）
+set(TIFF_DIR ${CMAKE_SOURCE_DIR}/libtiff)
+set(TIFF_INCLUDE_DIRS ${TIFF_DIR}/include)
+set(TIFF_LIB_DIR ${TIFF_DIR}/lib)
 
-target_include_directories(relief_height_field PRIVATE ${OpenCV_INCLUDE_DIRS})
+add_executable(relief_height_field relief_height_field_v2.cpp)
+
+target_include_directories(relief_height_field PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    ${TIFF_INCLUDE_DIRS}
+)
 target_link_libraries(relief_height_field PRIVATE
     debug ${OpenCV_LIB_DIR}/opencv_world470d.lib
     optimized ${OpenCV_LIB_DIR}/opencv_world470.lib
+    ${TIFF_LIB_DIR}/tiff.lib
+)
+
+# 复制 tiff.dll 到输出目录
+add_custom_command(TARGET relief_height_field POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${TIFF_DIR}/bin/tiff.dll
+        $<TARGET_FILE_DIR:relief_height_field>/tiff.dll
 )
 
 # 可选：开启显示窗口
