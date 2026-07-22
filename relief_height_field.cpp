@@ -121,14 +121,40 @@ int main(int argc, char* argv[]) {
     // ============================================================
     // 06. RGB → Gray  (对应 count_channels + rgb1_to_gray)
     // ============================================================
+    // Alpha 遮罩：透明区域(alpha==0)为 255，不透区域为 0
+    // 用于最后将透明区域压到最低高度
+    cv::Mat transparentMask;
+
     cv::Mat gray;
     if (image.channels() == 3) {
         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
     } else if (image.channels() == 4) {
-        cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
+        // 分离 BGRA 通道
+        std::vector<cv::Mat> channels(4);
+        cv::split(image, channels);
+        // channels[0]=B, [1]=G, [2]=R, [3]=A
+
+        // 用 RGB 部分正常转灰度
+        cv::Mat bgr;
+        cv::cvtColor(image, bgr, cv::COLOR_BGRA2BGR);
+        cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+
+        // 透明区域遮罩：alpha <= 15 → 255（扩大透明判定，消除半透明边缘毛刺）
+        cv::threshold(channels[3], transparentMask, 15, 255, cv::THRESH_BINARY_INV);
+
+        // 形态学膨胀：将遮罩向外扩 3 像素，形成缓冲区吃掉毛刺
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
+        cv::dilate(transparentMask, transparentMask, kernel);
+
+        // 用 inpaint 从边缘自然延伸填充透明区域，避免硬边界产生假细节
+        cv::inpaint(gray, transparentMask, gray, 5.0, cv::INPAINT_TELEA);
     } else {
         gray = image.clone();
     }
+
+    // 保存 Gray 以便检查透明区域影响
+    cv::imwrite("gray_check.tif", gray);
+    std::cout << "Save gray_check.tif OK" << std::endl;
 
     // 确保 Gray 是 CV_32F 以进行浮点运算（Halcon 内部默认使用浮点）
     cv::Mat grayF;
@@ -226,6 +252,12 @@ int main(int argc, char* argv[]) {
     cv::Mat finalHeightMap;
     cv::normalize(heightRaw, finalHeightMap, 0, 255, cv::NORM_MINMAX, CV_8U);
     printRange(finalHeightMap, "FinalHeightMap");
+
+    // 将透明区域压到最低高度 (0)
+    if (!transparentMask.empty()) {
+        finalHeightMap.setTo(0, transparentMask);
+        std::cout << "Transparent areas set to min height (0)." << std::endl;
+    }
 
     // ============================================================
     // 22. 保存 8-bit Height Map  (对应 write_image)
