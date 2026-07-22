@@ -1,4 +1,4 @@
-# 图片文件
+# ==================== 图片文件 ====================
 *.jpg
 *.jpeg
 *.png
@@ -15,3 +15,57 @@
 *.psd
 *.ai
 *.eps
+
+# ==================== 构建输出 ====================
+build/
+out/
+x64/
+x86/
+Debug/
+Release/
+
+# ==================== 编译产物 ====================
+*.exe
+*.dll
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.tlog
+*.recipe
+
+# ==================== CMake 生成文件（不在 build 内的情况） ====================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake.user
+
+# ==================== IDE / 编辑器 ====================
+# Visual Studio
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+*.aps
+*.opendb
+*.db
+
+# VS Code
+.vscode/
+
+# Claude Code
+.claude/
+
+# ==================== 操作系统 ====================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
