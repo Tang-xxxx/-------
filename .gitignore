@@ -1,0 +1,17 @@
+# 图片文件
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.svg
+*.webp
+*.ico
+*.heic
+*.heif
+*.raw
+*.psd
+*.ai
+*.eps
