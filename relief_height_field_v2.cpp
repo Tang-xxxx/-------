@@ -44,8 +44,12 @@
 #include <opencv2/opencv.hpp>
 #include <tiffio.h>
 
+#include <chrono>
 #include <cstring>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -78,8 +82,8 @@ struct Config {
     double middleWeight = 0.8;
     double highWeight   = 0.25;
 
-    // 输出路径
-    std::string output8bit  = "Badge_Height_V4_1_8bit.tif";
+    // 输出路径（在 main 中动态生成，含时间戳）
+    std::string output8bit;
 
     // 测试：缩小到一半加速
     bool testHalfScale = true;
@@ -381,57 +385,67 @@ int main(int argc, char* argv[]) {
     cv::bitwise_not(finalHeightMap, finalHeightMap);
     std::cout << "Height map inverted." << std::endl;
 
+    // 生成带时间戳的输出文件名
+    {
+        auto now = std::chrono::system_clock::now();
+        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        std::tm* tm = std::localtime(&t);
+        std::ostringstream oss;
+        oss << "Badge_" << std::put_time(tm, "%Y-%m-%d_%H-%M-%S") << ".tif";
+        cfg.output8bit = oss.str();
+    }
+
     // ============================================================
-    // 两步走：
-    //   1. cv::imwrite 写基础 4ch TIFF（像素数据保证正确）
-    //   2. libtiff 补丁 ExtraSamples + Photoshop 标签
+    // 一步到位：libtiff 直接写 4ch TIFF (RGB+W1)，含全部标签
     // ============================================================
     {
-        // Step 1: 用 OpenCV 写，保持 BGR 顺序
-        //         注意：imwrite 写 TIFF 时会自动 BGR→RGB，所以这里不手动交换
-        std::vector<cv::Mat> bgrCh(3);
-        cv::split(bgrOriginal, bgrCh);
-        std::vector<cv::Mat> bgraCh = {bgrCh[0], bgrCh[1], bgrCh[2], finalHeightMap};
-        cv::Mat outputBGRA;
-        cv::merge(bgraCh, outputBGRA);
+        const int w = bgrOriginal.cols;
+        const int h = bgrOriginal.rows;
 
-        // 写 8-bit
-        std::string tmp8 = cfg.output8bit + ".tmp.tif";
-        cv::imwrite(tmp8, outputBGRA);
+        TIFF* tif = TIFFOpen(cfg.output8bit.c_str(), "w");
+        if (!tif) {
+            std::cerr << "TIFFOpen failed: " << cfg.output8bit << std::endl;
+            return -1;
+        }
 
-        // Step 2: 用 libtiff 补丁标签
-        auto psData = buildPhotoshopData(4, {"W1"});
+        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, w);
+        TIFFSetField(tif, TIFFTAG_IMAGELENGTH, h);
+        TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 4);
+        TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8, 8, 8, 8);
+        TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
+        TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+        TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+        TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+        TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP,
+                     static_cast<uint32_t>(h));
+
         uint16_t extraSample = EXTRASAMPLE_UNSPECIFIED;
+        TIFFSetField(tif, TIFFTAG_EXTRASAMPLES, 1, &extraSample);
 
-        auto patchTiff = [&](const std::string& tmpPath, const std::string& finalPath) {
-            TIFF* tif = TIFFOpen(tmpPath.c_str(), "r+");
-            if (!tif) {
-                std::cerr << "TIFFOpen r+ failed: " << tmpPath << std::endl;
-                return false;
-            }
-            // 修改 ExtraSamples: Alpha(2) → Unspecified(0) = 专色
-            TIFFSetField(tif, TIFFTAG_EXTRASAMPLES, 1, &extraSample);
-            // 添加 Photoshop 标签
-            TIFFSetField(tif, TIFFTAG_PHOTOSHOP,
-                         static_cast<uint32_t>(psData.size()), psData.data());
-            // 设置 300 DPI
-            TIFFSetField(tif, TIFFTAG_XRESOLUTION, 300.0);
-            TIFFSetField(tif, TIFFTAG_YRESOLUTION, 300.0);
-            TIFFSetField(tif, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
-            bool ok = (TIFFRewriteDirectory(tif) == 1);
-            TIFFClose(tif);
-            if (ok) {
-                // 重命名为最终文件
-                std::remove(finalPath.c_str());
-                std::rename(tmpPath.c_str(), finalPath.c_str());
-            } else {
-                std::cerr << "TIFFRewriteDirectory failed for " << tmpPath << std::endl;
-            }
-            return ok;
-        };
+        auto psData = buildPhotoshopData(4, {"W1"});
+        TIFFSetField(tif, TIFFTAG_PHOTOSHOP,
+                     static_cast<uint32_t>(psData.size()), psData.data());
 
-        bool ok8 = patchTiff(tmp8, cfg.output8bit);
-        std::cout << "Save 4ch (RGB+W1): " << (ok8 ? "OK" : "FAIL")
+        TIFFSetField(tif, TIFFTAG_XRESOLUTION, 300.0);
+        TIFFSetField(tif, TIFFTAG_YRESOLUTION, 300.0);
+        TIFFSetField(tif, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
+
+        // 用 OpenCV merge 构建 R,G,B,W1 四通道（匹配 PHOTOMETRIC_RGB）
+        std::vector<cv::Mat> ch(3);
+        cv::split(bgrOriginal, ch);  // ch[0]=B, ch[1]=G, ch[2]=R
+        cv::Mat rgba;
+        cv::merge(std::vector<cv::Mat>{ch[2], ch[1], ch[0], finalHeightMap}, rgba);
+        // rgba 通道顺序：R, G, B, W1
+        if (!rgba.isContinuous()) rgba = rgba.clone();
+
+        // 调试：直接保存 rgba 检查数据是否正确
+        cv::imwrite("debug_rgba.tif", rgba);
+
+        bool writeOk = (TIFFWriteRawStrip(tif, 0, rgba.data,
+                           static_cast<tsize_t>(rgba.step * rgba.rows)) != -1);
+
+        TIFFClose(tif);
+        std::cout << "Save 4ch (RGB+W1): " << (writeOk ? "OK" : "FAIL")
                   << " → " << cfg.output8bit << std::endl;
     }
 
