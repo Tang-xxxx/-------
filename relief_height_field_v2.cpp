@@ -80,7 +80,9 @@ struct Config {
 
     // 输出路径
     std::string output8bit  = "Badge_Height_V4_1_8bit.tif";
-    std::string output16bit = "Badge_Height_V4_1_16bit.tif";
+
+    // 测试：缩小到一半加速
+    bool testHalfScale = true;
 };
 
 // ============================================================
@@ -187,103 +189,6 @@ static std::vector<uint8_t> buildPhotoshopData(int totalChannels,
 }
 
 // ============================================================
-// 使用 libtiff 保存 4 通道 TIFF (R, G, B, W1)
-// ExtraSamples=0 → PS 识别为专色通道
-// Photoshop tag 34377 → 专色通道名称为 "W1"
-// ============================================================
-static bool saveTiff4ch(const std::string& path,
-                        const cv::Mat& bgr8,     // 原始 BGR 8-bit
-                        const cv::Mat& height8,   // 高度场 8-bit
-                        int bitDepth) {
-    if (bgr8.rows != height8.rows || bgr8.cols != height8.cols)
-        return false;
-
-    const int w = bgr8.cols;
-    const int h = bgr8.rows;
-
-    TIFF* tif = TIFFOpen(path.c_str(), "w");
-    if (!tif) {
-        std::cerr << "TIFFOpen failed: " << path << std::endl;
-        return false;
-    }
-
-    TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, w);
-    TIFFSetField(tif, TIFFTAG_IMAGELENGTH, h);
-    TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 4);
-    // BitsPerSample 必须是与通道数匹配的数组
-    uint16_t bps[] = {static_cast<uint16_t>(bitDepth),
-                      static_cast<uint16_t>(bitDepth),
-                      static_cast<uint16_t>(bitDepth),
-                      static_cast<uint16_t>(bitDepth)};
-    TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 4, bps);
-    TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
-    TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
-    TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
-    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP,
-                 TIFFDefaultStripSize(tif, static_cast<uint32_t>(-1)));
-
-    // 第 4 通道 = ExtraSamples: 0 = unspecified → PS 专色通道，而非 Alpha
-    uint16_t extraSample = EXTRASAMPLE_UNSPECIFIED;
-    TIFFSetField(tif, TIFFTAG_EXTRASAMPLES, 1, &extraSample);
-
-    // Photoshop Image Resources: 全部专色通道元数据
-    auto psData = buildPhotoshopData(4, {"W1"});
-    TIFFSetField(tif, TIFFTAG_PHOTOSHOP,
-                 static_cast<uint32_t>(psData.size()), psData.data());
-
-    // 分辨率
-    TIFFSetField(tif, TIFFTAG_XRESOLUTION, 300.0);
-    TIFFSetField(tif, TIFFTAG_YRESOLUTION, 300.0);
-    TIFFSetField(tif, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
-
-    // ============================================================
-    // 逐行写入 (标准 libtiff 做法)
-    // ============================================================
-    bool writeOk = true;
-    if (bitDepth == 16) {
-        cv::Mat bgr16, h16;
-        bgr8.convertTo(bgr16, CV_16U, 65535.0 / 255.0);
-        height8.convertTo(h16, CV_16U, 65535.0 / 255.0);
-
-        std::vector<uint16_t> row(static_cast<size_t>(w) * 4);
-        for (int y = 0; y < h && writeOk; y++) {
-            const uint16_t* pb = bgr16.ptr<uint16_t>(y);
-            const uint16_t* ph = h16.ptr<uint16_t>(y);
-            for (int x = 0; x < w; x++) {
-                row[x * 4 + 0] = pb[x * 3 + 2];  // R
-                row[x * 4 + 1] = pb[x * 3 + 1];  // G
-                row[x * 4 + 2] = pb[x * 3 + 0];  // B
-                row[x * 4 + 3] = ph[x];          // W1
-            }
-            if (TIFFWriteScanline(tif, row.data(), y, 0) < 0) {
-                std::cerr << "TIFFWriteScanline 16-bit row " << y << " failed" << std::endl;
-                writeOk = false;
-            }
-        }
-    } else {
-        std::vector<uint8_t> row(static_cast<size_t>(w) * 4);
-        for (int y = 0; y < h && writeOk; y++) {
-            const uint8_t* pb = bgr8.ptr<uint8_t>(y);
-            const uint8_t* ph = height8.ptr<uint8_t>(y);
-            for (int x = 0; x < w; x++) {
-                row[x * 4 + 0] = pb[x * 3 + 2];  // R
-                row[x * 4 + 1] = pb[x * 3 + 1];  // G
-                row[x * 4 + 2] = pb[x * 3 + 0];  // B
-                row[x * 4 + 3] = ph[x];          // W1
-            }
-            if (TIFFWriteScanline(tif, row.data(), y, 0) < 0) {
-                std::cerr << "TIFFWriteScanline 8-bit row " << y << " failed" << std::endl;
-                writeOk = false;
-            }
-        }
-    }
-
-    TIFFClose(tif);
-    return writeOk;
-}
-
-// ============================================================
 // 主处理流水线
 // ============================================================
 int main(int argc, char* argv[]) {
@@ -301,6 +206,15 @@ int main(int argc, char* argv[]) {
     if (image.empty()) {
         std::cerr << "Error: Cannot read image: " << cfg.imagePath << std::endl;
         return -1;
+    }
+
+    // 测试：缩小到 2/3
+    if (cfg.testHalfScale) {
+        cv::Mat scaled;
+        cv::resize(image, scaled, cv::Size(image.cols * 2 / 3, image.rows * 2 / 3),
+                   0, 0, cv::INTER_AREA);
+        image = scaled;
+        std::cout << "Test mode: scaled to 67%" << std::endl;
     }
 
     // ============================================================
@@ -345,6 +259,8 @@ int main(int argc, char* argv[]) {
 
         // 用 inpaint 从边缘自然延伸填充透明区域，避免硬边界产生假细节
         cv::inpaint(gray, transparentMask, gray, 5.0, cv::INPAINT_TELEA);
+        // 透明区域 RGB 填 255（纯白），避免残留数据产生横竖条纹
+        bgrOriginal.setTo(cv::Scalar(255, 255, 255), transparentMask);
     } else {
         gray = image.clone();
         cv::cvtColor(gray, bgrOriginal, cv::COLOR_GRAY2BGR);  // 单通道转伪 RGB
@@ -353,6 +269,10 @@ int main(int argc, char* argv[]) {
     // 保存 Gray 以便检查透明区域影响
     cv::imwrite("gray_check.tif", gray);
     std::cout << "Save gray_check.tif OK" << std::endl;
+
+    // 调试：保存 bgrOriginal 检查原始 RGB 是否已有条纹
+    cv::imwrite("debug_bgr_original.tif", bgrOriginal);
+    std::cout << "Save debug_bgr_original.tif OK" << std::endl;
 
     // 确保 Gray 是 CV_32F 以进行浮点运算（Halcon 内部默认使用浮点）
     cv::Mat grayF;
@@ -467,27 +387,17 @@ int main(int argc, char* argv[]) {
     //   2. libtiff 补丁 ExtraSamples + Photoshop 标签
     // ============================================================
     {
-        // Step 1: 用 OpenCV 写，数据格式绝对正确
+        // Step 1: 用 OpenCV 写，保持 BGR 顺序
+        //         注意：imwrite 写 TIFF 时会自动 BGR→RGB，所以这里不手动交换
         std::vector<cv::Mat> bgrCh(3);
         cv::split(bgrOriginal, bgrCh);
-        std::vector<cv::Mat> rgbaCh = {bgrCh[2], bgrCh[1], bgrCh[0], finalHeightMap};
-        cv::Mat outputRGBA;
-        cv::merge(rgbaCh, outputRGBA);
+        std::vector<cv::Mat> bgraCh = {bgrCh[0], bgrCh[1], bgrCh[2], finalHeightMap};
+        cv::Mat outputBGRA;
+        cv::merge(bgraCh, outputBGRA);
 
-        // 先写 8-bit
+        // 写 8-bit
         std::string tmp8 = cfg.output8bit + ".tmp.tif";
-        cv::imwrite(tmp8, outputRGBA);
-
-        // 再写 16-bit
-        std::string tmp16 = cfg.output16bit + ".tmp.tif";
-        cv::Mat rgb16, h16;
-        bgrOriginal.convertTo(rgb16, CV_16U, 65535.0 / 255.0);
-        cv::split(rgb16, bgrCh);
-        finalHeightMap.convertTo(h16, CV_16U, 65535.0 / 255.0);
-        std::vector<cv::Mat> rgbaCh16 = {bgrCh[2], bgrCh[1], bgrCh[0], h16};
-        cv::Mat outputRGBA16;
-        cv::merge(rgbaCh16, outputRGBA16);
-        cv::imwrite(tmp16, outputRGBA16);
+        cv::imwrite(tmp8, outputBGRA);
 
         // Step 2: 用 libtiff 补丁标签
         auto psData = buildPhotoshopData(4, {"W1"});
@@ -521,12 +431,8 @@ int main(int argc, char* argv[]) {
         };
 
         bool ok8 = patchTiff(tmp8, cfg.output8bit);
-        std::cout << "Save 8-bit 4ch (RGB+W1): " << (ok8 ? "OK" : "FAIL")
+        std::cout << "Save 4ch (RGB+W1): " << (ok8 ? "OK" : "FAIL")
                   << " → " << cfg.output8bit << std::endl;
-
-        bool ok16 = patchTiff(tmp16, cfg.output16bit);
-        std::cout << "Save 16-bit 4ch (RGB+W1): " << (ok16 ? "OK" : "FAIL")
-                  << " → " << cfg.output16bit << std::endl;
     }
 
     // ============================================================
