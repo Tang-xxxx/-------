@@ -30,6 +30,7 @@ target_link_libraries(relief_height_field PRIVATE
     optimized ${OpenCV_LIB_DIR}/opencv_world470.lib
     ${TIFF_LIB_DIR}/tiff.lib
     comdlg32
+    shell32
 )
 
 # 复制 tiff.dll 到输出目录
