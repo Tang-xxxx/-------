@@ -457,6 +457,10 @@ int main(int argc, char* argv[]) {
         std::cout << "Transparent areas set to min height (0)." << std::endl;
     }
 
+    // 反转高度值: 0↔255，亮区↔暗区
+    cv::bitwise_not(finalHeightMap, finalHeightMap);
+    std::cout << "Height map inverted." << std::endl;
+
     // ============================================================
     // 两步走：
     //   1. cv::imwrite 写基础 4ch TIFF（像素数据保证正确）
