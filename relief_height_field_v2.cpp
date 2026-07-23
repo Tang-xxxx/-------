@@ -214,8 +214,21 @@ bool processImageFile(const std::string& imagePath, int scalePercent,
 
     // ============================================================
     // 02. 读取图像  (对应 read_image)
+    //   转宽字符直传 imread，避免 UTF-8/GBK 编码问题
     // ============================================================
-    cv::Mat image = cv::imread(cfg.imagePath, cv::IMREAD_UNCHANGED);
+    // 02. 读取图像  (对应 read_image)
+    //   UTF-8 → ACP 交给 cv::imread
+    // ============================================================
+    cv::Mat image;
+    {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, cfg.imagePath.c_str(), -1, nullptr, 0);
+        std::wstring wpath(wlen - 1, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, cfg.imagePath.c_str(), -1, &wpath[0], wlen);
+        int alen = WideCharToMultiByte(CP_ACP, 0, wpath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string apath(alen - 1, '\0');
+        WideCharToMultiByte(CP_ACP, 0, wpath.c_str(), -1, &apath[0], alen, nullptr, nullptr);
+        image = cv::imread(apath, cv::IMREAD_UNCHANGED);
+    }
     if (image.empty()) {
         outMsg = "无法读取图片: " + cfg.imagePath;
         std::cerr << outMsg << std::endl;
@@ -418,9 +431,27 @@ bool processImageFile(const std::string& imagePath, int scalePercent,
         const int w = bgrOriginal.cols;
         const int h = bgrOriginal.rows;
 
-        TIFF* tif = TIFFOpen(cfg.output8bit.c_str(), "w");
+        // UTF-8 → ACP 给 TIFFOpen / CreateDirectory
+        std::string tiffPath;
+        {
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, cfg.output8bit.c_str(), -1, nullptr, 0);
+            std::wstring wpath(wlen - 1, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, cfg.output8bit.c_str(), -1, &wpath[0], wlen);
+            // 确保输出目录存在
+            std::wstring wdir = wpath;
+            size_t pos = wdir.find_last_of(L"\\/");
+            if (pos != std::wstring::npos) {
+                wdir = wdir.substr(0, pos);
+                SHCreateDirectoryExW(nullptr, wdir.c_str(), nullptr);
+            }
+            int alen = WideCharToMultiByte(CP_ACP, 0, wpath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            tiffPath.resize(alen - 1);
+            WideCharToMultiByte(CP_ACP, 0, wpath.c_str(), -1, &tiffPath[0], alen, nullptr, nullptr);
+        }
+
+        TIFF* tif = TIFFOpen(tiffPath.c_str(), "w");
         if (!tif) {
-            outMsg = "无法创建输出文件";
+            outMsg = "无法创建输出文件: " + cfg.output8bit;
             std::cerr << outMsg << std::endl;
             return false;
         }
@@ -524,9 +555,9 @@ static void OnBrowse(GuiCtx& ctx, HWND hwnd) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle = L"选择输入图片";
     if (GetOpenFileNameW(&ofn)) {
-        int len = WideCharToMultiByte(CP_ACP, 0, filename, -1, nullptr, 0, nullptr, nullptr);
+        int len = WideCharToMultiByte(CP_UTF8, 0, filename, -1, nullptr, 0, nullptr, nullptr);
         ctx.cfg.imagePath.resize(len - 1);
-        WideCharToMultiByte(CP_ACP, 0, filename, -1, &ctx.cfg.imagePath[0], len, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, filename, -1, &ctx.cfg.imagePath[0], len, nullptr, nullptr);
         SetWindowTextW(ctx.hPathEdit, filename);
     }
 }
@@ -542,9 +573,9 @@ static void OnOutBrowse(GuiCtx& ctx, HWND hwnd) {
     if (pidl) {
         SHGetPathFromIDListW(pidl, path);
         CoTaskMemFree(pidl);
-        int len = WideCharToMultiByte(CP_ACP, 0, path, -1, nullptr, 0, nullptr, nullptr);
+        int len = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
         ctx.cfg.outputDir.resize(len - 1);
-        WideCharToMultiByte(CP_ACP, 0, path, -1, &ctx.cfg.outputDir[0], len, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, path, -1, &ctx.cfg.outputDir[0], len, nullptr, nullptr);
         SetWindowTextW(ctx.hOutDirEdit, path);
     }
 }
@@ -559,14 +590,14 @@ static void OnProcess(GuiCtx& ctx) {
     ctx.cfg.scalePercent = scale;
 
     GetWindowTextW(ctx.hPathEdit, buf, 256);
-    int len = WideCharToMultiByte(CP_ACP, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+    int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
     ctx.cfg.imagePath.resize(len - 1);
-    WideCharToMultiByte(CP_ACP, 0, buf, -1, &ctx.cfg.imagePath[0], len, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &ctx.cfg.imagePath[0], len, nullptr, nullptr);
 
     GetWindowTextW(ctx.hOutDirEdit, buf, 256);
-    len = WideCharToMultiByte(CP_ACP, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+    len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
     ctx.cfg.outputDir.resize(len - 1);
-    WideCharToMultiByte(CP_ACP, 0, buf, -1, &ctx.cfg.outputDir[0], len, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &ctx.cfg.outputDir[0], len, nullptr, nullptr);
 
     SetStatus(ctx, L"处理中...");
     EnableWindow(ctx.hBtnProcess, FALSE);
@@ -575,9 +606,9 @@ static void OnProcess(GuiCtx& ctx) {
     processImageFile(ctx.cfg.imagePath, ctx.cfg.scalePercent, ctx.cfg.outputDir, msg);
 
     // 把 UTF-8 msg 转成宽字符显示
-    int wlen = MultiByteToWideChar(CP_ACP, 0, msg.c_str(), -1, nullptr, 0);
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, msg.c_str(), -1, nullptr, 0);
     std::wstring wmsg(wlen - 1, L'\0');
-    MultiByteToWideChar(CP_ACP, 0, msg.c_str(), -1, &wmsg[0], wlen);
+    MultiByteToWideChar(CP_UTF8, 0, msg.c_str(), -1, &wmsg[0], wlen);
     SetStatus(ctx, wmsg.c_str());
     EnableWindow(ctx.hBtnProcess, TRUE);
 }
@@ -593,55 +624,54 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HINSTANCE hi = cs->hInstance;
 
         CreateWindowW(L"STATIC", L"输入图片:", WS_CHILD | WS_VISIBLE,
-                      15, 22, 65, 24, hwnd, nullptr, hi, nullptr);
-        // 路径从 UTF-8 转宽字符
-        int plen = MultiByteToWideChar(CP_ACP, 0, ctx->cfg.imagePath.c_str(), -1, nullptr, 0);
+                      15, 20, 80, 28, hwnd, nullptr, hi, nullptr);
+        int plen = MultiByteToWideChar(CP_UTF8, 0, ctx->cfg.imagePath.c_str(), -1, nullptr, 0);
         std::wstring wpath(plen - 1, L'\0');
-        MultiByteToWideChar(CP_ACP, 0, ctx->cfg.imagePath.c_str(), -1, &wpath[0], plen);
+        MultiByteToWideChar(CP_UTF8, 0, ctx->cfg.imagePath.c_str(), -1, &wpath[0], plen);
         ctx->hPathEdit = CreateWindowW(L"EDIT", wpath.c_str(),
                           WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                          80, 20, 250, 24, hwnd,
+                          100, 18, 320, 28, hwnd,
                           reinterpret_cast<HMENU>(ID_EDIT_PATH), hi, nullptr);
         ctx->hBtnBrowse = CreateWindowW(L"BUTTON", L"浏览...",
                            WS_CHILD | WS_VISIBLE,
-                           340, 19, 70, 26, hwnd,
+                           430, 17, 80, 30, hwnd,
                            reinterpret_cast<HMENU>(ID_BTN_BROWSE), hi, nullptr);
 
         CreateWindowW(L"STATIC", L"缩放比例:", WS_CHILD | WS_VISIBLE,
-                      15, 56, 65, 24, hwnd, nullptr, hi, nullptr);
+                      15, 64, 80, 28, hwnd, nullptr, hi, nullptr);
         ctx->hScaleEdit = CreateWindowW(L"EDIT",
                            std::to_wstring(ctx->cfg.scalePercent).c_str(),
                            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
-                           80, 54, 55, 24, hwnd,
+                           100, 62, 60, 28, hwnd,
                            reinterpret_cast<HMENU>(ID_EDIT_SCALE), hi, nullptr);
         CreateWindowW(L"STATIC", L"%", WS_CHILD | WS_VISIBLE,
-                      140, 56, 20, 24, hwnd, nullptr, hi, nullptr);
+                      165, 64, 30, 28, hwnd, nullptr, hi, nullptr);
 
         // 输出目录
         CreateWindowW(L"STATIC", L"输出目录:", WS_CHILD | WS_VISIBLE,
-                      15, 90, 65, 24, hwnd, nullptr, hi, nullptr);
+                      15, 108, 80, 28, hwnd, nullptr, hi, nullptr);
         int olen = MultiByteToWideChar(CP_ACP, 0, ctx->cfg.outputDir.c_str(), -1, nullptr, 0);
         std::wstring woutdir(olen - 1, L'\0');
         MultiByteToWideChar(CP_ACP, 0, ctx->cfg.outputDir.c_str(), -1, &woutdir[0], olen);
         ctx->hOutDirEdit = CreateWindowW(L"EDIT", woutdir.c_str(),
                            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                           80, 89, 250, 24, hwnd,
+                           100, 106, 320, 28, hwnd,
                            reinterpret_cast<HMENU>(ID_EDIT_OUTDIR), hi, nullptr);
         ctx->hBtnOutBrowse = CreateWindowW(L"BUTTON", L"浏览...",
                              WS_CHILD | WS_VISIBLE,
-                             340, 88, 70, 26, hwnd,
+                             430, 105, 80, 30, hwnd,
                              reinterpret_cast<HMENU>(ID_BTN_OUTBROWSE), hi, nullptr);
 
         ctx->hBtnProcess = CreateWindowW(L"BUTTON", L"开始处理",
                             WS_CHILD | WS_VISIBLE,
-                            80, 125, 100, 30, hwnd,
+                            100, 150, 110, 34, hwnd,
                             reinterpret_cast<HMENU>(ID_BTN_PROCESS), hi, nullptr);
 
         ctx->hStatus = CreateWindowW(L"STATIC", L"就绪 — 选择图片后点击 开始处理",
                        WS_CHILD | WS_VISIBLE,
-                       15, 175, 440, 24, hwnd, nullptr, hi, nullptr);
+                       15, 205, 500, 28, hwnd, nullptr, hi, nullptr);
 
-        HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL,
+        HFONT hFont = CreateFontW(20, 0, 0, 0, FW_NORMAL,
                                    FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    DEFAULT_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
@@ -685,7 +715,7 @@ static int RunGUI(HINSTANCE hInstance) {
     HWND hwnd = CreateWindowExW(
         0, L"ReliefHeightFieldGUI", L"Relief Height Field — 浮雕高度场",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 480, 260,
+        CW_USEDEFAULT, CW_USEDEFAULT, 560, 290,
         nullptr, nullptr, hInstance, &ctx);
 
     if (!hwnd) return -1;
