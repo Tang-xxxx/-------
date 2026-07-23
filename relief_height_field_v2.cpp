@@ -41,6 +41,8 @@
  * ============================================================
  */
 
+#include <windows.h>
+
 #include <opencv2/opencv.hpp>
 #include <tiffio.h>
 
@@ -85,8 +87,8 @@ struct Config {
     // 输出路径（在 main 中动态生成，含时间戳）
     std::string output8bit;
 
-    // 测试：缩小到一半加速
-    bool testHalfScale = true;
+    // 缩放百分比 (100 = 原尺寸, 67 = 2/3, 50 = 一半)
+    int scalePercent = 100;
 };
 
 // ============================================================
@@ -193,32 +195,36 @@ static std::vector<uint8_t> buildPhotoshopData(int totalChannels,
 }
 
 // ============================================================
-// 主处理流水线
+// 主处理流水线 (由 GUI 或命令行调用)
 // ============================================================
-int main(int argc, char* argv[]) {
+bool processImageFile(const std::string& imagePath, int scalePercent,
+                      std::string& outMsg) {
+    SetConsoleOutputCP(CP_UTF8);  // 控制台中文不乱码
     Config cfg;
+    cfg.imagePath = imagePath;
+    cfg.scalePercent = scalePercent;
 
-    // 允许命令行指定输入图像
-    if (argc > 1) {
-        cfg.imagePath = argv[1];
-    }
+    std::cout << "Input:  " << cfg.imagePath << std::endl;
+    std::cout << "Scale:  " << cfg.scalePercent << "%" << std::endl;
 
     // ============================================================
     // 02. 读取图像  (对应 read_image)
     // ============================================================
     cv::Mat image = cv::imread(cfg.imagePath, cv::IMREAD_UNCHANGED);
     if (image.empty()) {
-        std::cerr << "Error: Cannot read image: " << cfg.imagePath << std::endl;
-        return -1;
+        outMsg = "无法读取图片: " + cfg.imagePath;
+        std::cerr << outMsg << std::endl;
+        return false;
     }
 
-    // 测试：缩小到 2/3
-    if (cfg.testHalfScale) {
+    // 缩放
+    if (cfg.scalePercent > 0 && cfg.scalePercent != 100) {
+        double s = cfg.scalePercent / 100.0;
         cv::Mat scaled;
-        cv::resize(image, scaled, cv::Size(image.cols * 2 / 3, image.rows * 2 / 3),
-                   0, 0, cv::INTER_AREA);
+        cv::resize(image, scaled, cv::Size(),
+                   s, s, cv::INTER_AREA);
         image = scaled;
-        std::cout << "Test mode: scaled to 67%" << std::endl;
+        std::cout << "Scaled to " << cfg.scalePercent << "%" << std::endl;
     }
 
     // ============================================================
@@ -389,7 +395,9 @@ int main(int argc, char* argv[]) {
     {
         auto now = std::chrono::system_clock::now();
         std::time_t t = std::chrono::system_clock::to_time_t(now);
-        std::tm* tm = std::localtime(&t);
+        std::tm tm_buf;
+        localtime_s(&tm_buf, &t);
+        std::tm* tm = &tm_buf;
         std::ostringstream oss;
         oss << "Badge_" << std::put_time(tm, "%Y-%m-%d_%H-%M-%S") << ".tif";
         cfg.output8bit = oss.str();
@@ -404,8 +412,9 @@ int main(int argc, char* argv[]) {
 
         TIFF* tif = TIFFOpen(cfg.output8bit.c_str(), "w");
         if (!tif) {
-            std::cerr << "TIFFOpen failed: " << cfg.output8bit << std::endl;
-            return -1;
+            outMsg = "无法创建输出文件";
+            std::cerr << outMsg << std::endl;
+            return false;
         }
 
         TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, w);
@@ -466,6 +475,202 @@ int main(int argc, char* argv[]) {
     cv::waitKey(0);
 #endif
 
-    std::cout << "\nDone." << std::endl;
+    outMsg = "完成 — " + cfg.output8bit;
+    std::cout << "\nDone: " << outMsg << std::endl;
+    return true;
+}
+
+// ============================================================
+// GUI 界面 (宽字符版 — 支持中文)
+// ============================================================
+#define ID_BTN_BROWSE   1001
+#define ID_BTN_PROCESS  1002
+#define ID_EDIT_PATH    1003
+#define ID_EDIT_SCALE   1004
+
+struct GuiCtx {
+    Config  cfg;
+    HWND    hPathEdit   = nullptr;
+    HWND    hBtnBrowse  = nullptr;
+    HWND    hScaleEdit  = nullptr;
+    HWND    hBtnProcess = nullptr;
+    HWND    hStatus     = nullptr;
+};
+
+static void SetStatus(GuiCtx& ctx, const wchar_t* msg) {
+    SetWindowTextW(ctx.hStatus, msg);
+}
+
+static void OnBrowse(GuiCtx& ctx, HWND hwnd) {
+    wchar_t filename[MAX_PATH] = {0};
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp\0All\0*.*\0";
+    ofn.lpstrFile = filename;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle = L"选择输入图片";
+    if (GetOpenFileNameW(&ofn)) {
+        // 宽字符 → UTF-8 std::string
+        int len = WideCharToMultiByte(CP_ACP, 0, filename, -1, nullptr, 0, nullptr, nullptr);
+        ctx.cfg.imagePath.resize(len - 1);
+        WideCharToMultiByte(CP_ACP, 0, filename, -1, &ctx.cfg.imagePath[0], len, nullptr, nullptr);
+        SetWindowTextW(ctx.hPathEdit, filename);
+    }
+}
+
+static void OnProcess(GuiCtx& ctx) {
+    wchar_t buf[256];
+    GetWindowTextW(ctx.hScaleEdit, buf, 256);
+    int scale = std::max(1, std::min(200, _wtoi(buf)));
+    if (scale == 0) scale = 100;
+    _snwprintf_s(buf, 256, _TRUNCATE, L"%d", scale);
+    SetWindowTextW(ctx.hScaleEdit, buf);
+    ctx.cfg.scalePercent = scale;
+
+    GetWindowTextW(ctx.hPathEdit, buf, 256);
+    int len = WideCharToMultiByte(CP_ACP, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+    ctx.cfg.imagePath.resize(len - 1);
+    WideCharToMultiByte(CP_ACP, 0, buf, -1, &ctx.cfg.imagePath[0], len, nullptr, nullptr);
+
+    SetStatus(ctx, L"处理中...");
+    EnableWindow(ctx.hBtnProcess, FALSE);
+
+    std::string msg;
+    processImageFile(ctx.cfg.imagePath, ctx.cfg.scalePercent, msg);
+
+    // 把 UTF-8 msg 转成宽字符显示
+    int wlen = MultiByteToWideChar(CP_ACP, 0, msg.c_str(), -1, nullptr, 0);
+    std::wstring wmsg(wlen - 1, L'\0');
+    MultiByteToWideChar(CP_ACP, 0, msg.c_str(), -1, &wmsg[0], wlen);
+    SetStatus(ctx, wmsg.c_str());
+    EnableWindow(ctx.hBtnProcess, TRUE);
+}
+
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    GuiCtx* ctx = reinterpret_cast<GuiCtx*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        ctx = static_cast<GuiCtx*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
+        HINSTANCE hi = cs->hInstance;
+
+        CreateWindowW(L"STATIC", L"输入图片:", WS_CHILD | WS_VISIBLE,
+                      15, 22, 65, 24, hwnd, nullptr, hi, nullptr);
+        // 路径从 UTF-8 转宽字符
+        int plen = MultiByteToWideChar(CP_ACP, 0, ctx->cfg.imagePath.c_str(), -1, nullptr, 0);
+        std::wstring wpath(plen - 1, L'\0');
+        MultiByteToWideChar(CP_ACP, 0, ctx->cfg.imagePath.c_str(), -1, &wpath[0], plen);
+        ctx->hPathEdit = CreateWindowW(L"EDIT", wpath.c_str(),
+                          WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                          80, 20, 250, 24, hwnd,
+                          reinterpret_cast<HMENU>(ID_EDIT_PATH), hi, nullptr);
+        ctx->hBtnBrowse = CreateWindowW(L"BUTTON", L"浏览...",
+                           WS_CHILD | WS_VISIBLE,
+                           340, 19, 70, 26, hwnd,
+                           reinterpret_cast<HMENU>(ID_BTN_BROWSE), hi, nullptr);
+
+        CreateWindowW(L"STATIC", L"缩放比例:", WS_CHILD | WS_VISIBLE,
+                      15, 56, 65, 24, hwnd, nullptr, hi, nullptr);
+        ctx->hScaleEdit = CreateWindowW(L"EDIT",
+                           std::to_wstring(ctx->cfg.scalePercent).c_str(),
+                           WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+                           80, 54, 55, 24, hwnd,
+                           reinterpret_cast<HMENU>(ID_EDIT_SCALE), hi, nullptr);
+        CreateWindowW(L"STATIC", L"%", WS_CHILD | WS_VISIBLE,
+                      140, 56, 20, 24, hwnd, nullptr, hi, nullptr);
+
+        ctx->hBtnProcess = CreateWindowW(L"BUTTON", L"开始处理",
+                            WS_CHILD | WS_VISIBLE,
+                            80, 90, 100, 30, hwnd,
+                            reinterpret_cast<HMENU>(ID_BTN_PROCESS), hi, nullptr);
+
+        ctx->hStatus = CreateWindowW(L"STATIC", L"就绪 — 选择图片后点击 开始处理",
+                       WS_CHILD | WS_VISIBLE,
+                       15, 140, 440, 24, hwnd, nullptr, hi, nullptr);
+
+        HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL,
+                                   FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                   DEFAULT_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+        if (hFont) {
+            EnumChildWindows(hwnd, [](HWND c, LPARAM f) -> BOOL {
+                SendMessageW(c, WM_SETFONT, (WPARAM)f, TRUE);
+                return TRUE;
+            }, (LPARAM)hFont);
+        }
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (!ctx) break;
+        switch (LOWORD(wp)) {
+        case ID_BTN_BROWSE:  OnBrowse(*ctx, hwnd); break;
+        case ID_BTN_PROCESS: OnProcess(*ctx);      break;
+        }
+        break;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static int RunGUI(HINSTANCE hInstance) {
+    WNDCLASSEXW wc = {};
+    wc.cbSize        = sizeof(wc);
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance     = hInstance;
+    wc.hCursor       = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.lpszClassName = L"ReliefHeightFieldGUI";
+    RegisterClassExW(&wc);
+
+    GuiCtx ctx;
+
+    HWND hwnd = CreateWindowExW(
+        0, L"ReliefHeightFieldGUI", L"Relief Height Field — 浮雕高度场",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, 480, 220,
+        nullptr, nullptr, hInstance, &ctx);
+
+    if (!hwnd) return -1;
+
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+
+    MSG m;
+    while (GetMessageW(&m, nullptr, 0, 0)) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
     return 0;
+}
+
+// ============================================================
+// 入口
+// ============================================================
+int main(int argc, char** argv) {
+    // 有命令行参数 → 直接处理（兼容旧的命令行模式）
+    if (argc > 1) {
+        Config cfg;
+        for (int i = 1; i < argc; i++) {
+            std::string a = argv[i];
+            bool isNum = !a.empty();
+            for (char c : a) if (!std::isdigit(c)) { isNum = false; break; }
+            if (isNum) cfg.scalePercent = std::stoi(a);
+            else       cfg.imagePath = a;
+        }
+        std::string msg;
+        processImageFile(cfg.imagePath, cfg.scalePercent, msg);
+        std::cout << msg << std::endl;
+        return 0;
+    }
+
+    // 无参数 → 启动 GUI
+    return RunGUI(GetModuleHandleA(nullptr));
 }
