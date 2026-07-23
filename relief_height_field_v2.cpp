@@ -500,6 +500,10 @@ int main(int argc, char* argv[]) {
             // 添加 Photoshop 标签
             TIFFSetField(tif, TIFFTAG_PHOTOSHOP,
                          static_cast<uint32_t>(psData.size()), psData.data());
+            // 设置 300 DPI
+            TIFFSetField(tif, TIFFTAG_XRESOLUTION, 300.0);
+            TIFFSetField(tif, TIFFTAG_YRESOLUTION, 300.0);
+            TIFFSetField(tif, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
             bool ok = (TIFFRewriteDirectory(tif) == 1);
             TIFFClose(tif);
             if (ok) {
