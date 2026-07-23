@@ -277,12 +277,12 @@ bool processImageFile(const std::string& imagePath, int scalePercent,
     }
 
     // 保存 Gray 以便检查透明区域影响
-    cv::imwrite("gray_check.tif", gray);
-    std::cout << "Save gray_check.tif OK" << std::endl;
+    // cv::imwrite("gray_check.tif", gray);
+    // std::cout << "Save gray_check.tif OK" << std::endl;
 
     // 调试：保存 bgrOriginal 检查原始 RGB 是否已有条纹
-    cv::imwrite("debug_bgr_original.tif", bgrOriginal);
-    std::cout << "Save debug_bgr_original.tif OK" << std::endl;
+    // cv::imwrite("debug_bgr_original.tif", bgrOriginal);
+    // std::cout << "Save debug_bgr_original.tif OK" << std::endl;
 
     // 确保 Gray 是 CV_32F 以进行浮点运算（Halcon 内部默认使用浮点）
     cv::Mat grayF;
@@ -448,7 +448,7 @@ bool processImageFile(const std::string& imagePath, int scalePercent,
         if (!rgba.isContinuous()) rgba = rgba.clone();
 
         // 调试：直接保存 rgba 检查数据是否正确
-        cv::imwrite("debug_rgba.tif", rgba);
+        // cv::imwrite("debug_rgba.tif", rgba);
 
         bool writeOk = (TIFFWriteRawStrip(tif, 0, rgba.data,
                            static_cast<tsize_t>(rgba.step * rgba.rows)) != -1);
