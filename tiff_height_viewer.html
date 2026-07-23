@@ -454,6 +454,10 @@ select:focus { border-color: var(--accent); }
   <label class="toggle-label">
     <input type="checkbox" id="wireframe"> 🔲 线框模式
   </label>
+
+  <div class="control-divider"></div>
+
+  <button class="btn small" id="btnResetSettings">🔄 重置设置</button>
 </div>
 
 <!-- ──────────── SCRIPTS ──────────── -->
@@ -489,6 +493,7 @@ const dom = {
   btnReset: $('#btnReset'),
   btnTopView: $('#btnTopView'),
   btnScreenshot: $('#btnScreenshot'),
+  btnResetSettings: $('#btnResetSettings'),
   fileInput: $('#fileInput'),
   panel2dContent: $('#panel2dContent'),
   panel3dContent: $('#panel3dContent'),
@@ -969,10 +974,12 @@ async function loadTIFF(arrayBuffer, fileName) {
     dom.statRange.textContent = (dataMax - dataMin).toFixed(1);
     setUIEnabled(true);
 
-    // Build default mesh resolution
-    const defaultRes = Math.min(200, Math.max(50, Math.round(Math.max(width, height) / 5)));
-    dom.meshRes.value = defaultRes;
-    dom.meshResVal.textContent = defaultRes;
+    // Build default mesh resolution (only auto-set for first load; preserve user setting on subsequent loads)
+    if (!state.scene) {
+      const defaultRes = Math.min(200, Math.max(50, Math.round(Math.max(width, height) / 5)));
+      dom.meshRes.value = defaultRes;
+      dom.meshResVal.textContent = defaultRes;
+    }
 
     // Render 2D
     render2D();
@@ -1496,10 +1503,45 @@ dom.wireframe.addEventListener('change', () => {
   updateMeshAppearance();
 });
 
+// Reset settings to defaults
+function resetSettings() {
+  // zScale → 1.00
+  dom.zScale.value = 1;
+  dom.zScaleVal.textContent = '1.00';
+
+  // meshRes → 200 (or auto-computed default)
+  const defaultRes = state.tiffLoaded
+    ? Math.min(200, Math.max(50, Math.round(Math.max(state.imgWidth, state.imgHeight) / 5)))
+    : 200;
+  dom.meshRes.value = defaultRes;
+  dom.meshResVal.textContent = defaultRes;
+
+  // colorMap → jet
+  dom.colorMap.value = 'jet';
+
+  // toggles → defaults
+  dom.invertHeight.checked = false;
+  dom.autoNormalize.checked = true;
+  dom.showTexture.checked = false;
+  dom.wireframe.checked = false;
+
+  // Apply to 2D
+  render2D();
+
+  // Apply to 3D
+  if (state.mesh) {
+    fullRebuild();
+    updateMeshAppearance();
+  }
+
+  showToast('🔄 设置已重置为默认值');
+}
+
 // Buttons
 dom.btnReset.addEventListener('click', resetCamera);
 dom.btnTopView.addEventListener('click', topView);
 dom.btnScreenshot.addEventListener('click', takeScreenshot);
+dom.btnResetSettings.addEventListener('click', resetSettings);
 
 // Resize handler
 function onResize() {
